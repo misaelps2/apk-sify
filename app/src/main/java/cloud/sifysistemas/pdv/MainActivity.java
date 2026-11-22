@@ -3,8 +3,13 @@ package cloud.sifysistemas.pdv;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.webkit.CookieManager;
@@ -18,6 +23,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -28,11 +34,38 @@ import java.net.URISyntaxException;
 public final class MainActivity extends Activity {
     private static final URI SITE = URI.create("https://pdv.sifysistemas.com/");
     private static final int PICK_FILE = 1;
+    private static final long RETRY_DELAY_MS = 600;
 
     private FrameLayout root;
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private LinearLayout errorPanel;
+    private FrameLayout splash;
+    private boolean mainFrameFailed;
+    private boolean retried;
+    private boolean waitingForNetwork;
+    private boolean networkValidated;
+    private boolean watchingNetwork;
+
+    private final Runnable retryLoad = () -> {
+        if (mainFrameFailed) {
+            webView.loadUrl(SITE.toASCIIString());
+        }
+    };
+
+    private final ConnectivityManager.NetworkCallback networkCallback =
+            new ConnectivityManager.NetworkCallback() {
+        @Override
+        public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+            boolean validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+            runOnUiThread(() -> updateNetworkState(validated));
+        }
+
+        @Override
+        public void onLost(Network network) {
+            runOnUiThread(() -> updateNetworkState(false));
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -86,7 +119,25 @@ public final class MainActivity extends Activity {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false);
 
+        showSplash();
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                root.removeCallbacks(retryLoad);
+                mainFrameFailed = false;
+            }
+
+            @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                if (!mainFrameFailed && sameOrigin(Uri.parse(url))) {
+                    root.removeCallbacks(retryLoad);
+                    retried = false;
+                    waitingForNetwork = false;
+                    hideError();
+                    hideSplash();
+                }
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 if (!request.isForMainFrame() || sameOrigin(request.getUrl())) {
@@ -101,7 +152,7 @@ public final class MainActivity extends Activity {
                                 Toast.LENGTH_SHORT).show();
                     }
                 } else {
-                    showError("O servidor redirecionou para um endereço fora do PDV.");
+                    failLoad("O servidor redirecionou para um endereço fora do PDV.", false);
                 }
                 return true;
             }
@@ -110,7 +161,8 @@ public final class MainActivity extends Activity {
             public void onReceivedError(WebView view, WebResourceRequest request,
                                         WebResourceError error) {
                 if (request.isForMainFrame()) {
-                    showError("Não foi possível abrir o PDV. Verifique a conexão e tente novamente.");
+                    failLoad("Não foi possível abrir o PDV. Verifique a conexão e tente novamente.",
+                            isConnectionError(error.getErrorCode()));
                 }
             }
 
@@ -118,7 +170,7 @@ public final class MainActivity extends Activity {
             public void onReceivedHttpError(WebView view, WebResourceRequest request,
                                             WebResourceResponse response) {
                 if (request.isForMainFrame() && response.getStatusCode() >= 400) {
-                    showError("O PDV respondeu com HTTP " + response.getStatusCode() + ".");
+                    failLoad("O PDV respondeu com HTTP " + response.getStatusCode() + ".", false);
                 }
             }
         });
@@ -151,10 +203,66 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void showError(String message) {
+    private void showSplash() {
+        splash = new FrameLayout(this);
+        splash.setClickable(true);
+        splash.setBackgroundColor(getColor(R.color.sify_splash_background));
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(R.drawable.sify_icon);
+        int size = (int) (96 * getResources().getDisplayMetrics().density);
+        splash.addView(icon, new FrameLayout.LayoutParams(size, size, Gravity.CENTER));
+        root.addView(splash, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    private void hideSplash() {
+        if (splash != null) {
+            root.removeView(splash);
+            splash = null;
+        }
+    }
+
+    private static boolean isConnectionError(int error) {
+        return error == WebViewClient.ERROR_HOST_LOOKUP || error == WebViewClient.ERROR_CONNECT
+                || error == WebViewClient.ERROR_TIMEOUT || error == WebViewClient.ERROR_IO;
+    }
+
+    private void failLoad(String message, boolean connectionError) {
+        if (mainFrameFailed) {
+            return;
+        }
+        mainFrameFailed = true;
+        if (connectionError && !retried) {
+            retried = true;
+            root.postDelayed(retryLoad, RETRY_DELAY_MS);
+            return;
+        }
+        waitingForNetwork = connectionError;
+        hideSplash();
+        showError(message);
+    }
+
+    private void updateNetworkState(boolean validated) {
+        if (!watchingNetwork || networkValidated == validated) {
+            return;
+        }
+        networkValidated = validated;
+        if (validated && waitingForNetwork && mainFrameFailed) {
+            waitingForNetwork = false;
+            root.removeCallbacks(retryLoad);
+            retryLoad.run();
+        }
+    }
+
+    private void hideError() {
         if (errorPanel != null) {
             root.removeView(errorPanel);
+            errorPanel = null;
         }
+    }
+
+    private void showError(String message) {
+        hideError();
         errorPanel = new LinearLayout(this);
         errorPanel.setOrientation(LinearLayout.VERTICAL);
         int padding = (int) (24 * getResources().getDisplayMetrics().density);
@@ -165,9 +273,11 @@ public final class MainActivity extends Activity {
         Button retry = new Button(this);
         retry.setText("Tentar novamente");
         retry.setOnClickListener(button -> {
-            root.removeView(errorPanel);
-            errorPanel = null;
-            webView.loadUrl(SITE.toASCIIString());
+            hideError();
+            retried = false;
+            waitingForNetwork = false;
+            root.removeCallbacks(retryLoad);
+            retryLoad.run();
         });
         errorPanel.addView(text);
         errorPanel.addView(retry);
@@ -204,7 +314,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onSaveInstanceState(Bundle outState) {
-        if (webView != null) {
+        if (webView != null && !mainFrameFailed) {
             Bundle webState = new Bundle();
             webView.saveState(webState);
             outState.putBundle("web", webState);
@@ -213,7 +323,17 @@ public final class MainActivity extends Activity {
     }
 
     @Override
+    protected void onStart() {
+        super.onStart();
+        watchingNetwork = true;
+        getSystemService(ConnectivityManager.class).registerDefaultNetworkCallback(networkCallback);
+    }
+
+    @Override
     protected void onStop() {
+        watchingNetwork = false;
+        networkValidated = false;
+        getSystemService(ConnectivityManager.class).unregisterNetworkCallback(networkCallback);
         super.onStop();
         if (webView != null) {
             CookieManager.getInstance().flush();
@@ -222,6 +342,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        root.removeCallbacks(retryLoad);
         if (fileCallback != null) {
             fileCallback.onReceiveValue(null);
             fileCallback = null;

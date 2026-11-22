@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.Sify" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/sify_splash_background</item>
+        <item name="android:statusBarColor">@color/sify_splash_background</item>
+        <item name="android:navigationBarColor">@color/sify_splash_background</item>
+        <item name="android:windowSplashScreenBackground">@color/sify_splash_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+    </style>
+</resources>

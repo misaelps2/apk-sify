@@ -1,0 +1,9 @@
+<resources>
+    <color name="sify_splash_background">#111827</color>
+
+    <style name="Theme.Sify" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/sify_starting_window</item>
+        <item name="android:statusBarColor">@color/sify_splash_background</item>
+        <item name="android:navigationBarColor">@color/sify_splash_background</item>
+    </style>
+</resources>
